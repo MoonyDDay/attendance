@@ -1,0 +1,330 @@
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Student Attendance</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f3f5f8;
+      padding: 20px;
+      color: #20242b;
+    }
+
+    .panel {
+      max-width: 430px;
+      margin: 35px auto;
+      padding: 25px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 5px 25px #0001;
+    }
+
+    h2 { text-align: center; }
+
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 14px;
+      margin: 9px 0;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+
+    button {
+      width: 100%;
+      padding: 15px;
+      margin-top: 15px;
+      background: #16834b;
+      color: white;
+      border: 0;
+      border-radius: 9px;
+      font-size: 16px;
+      font-weight: bold;
+    }
+
+    button:disabled { opacity: .5; }
+
+    #message {
+      text-align: center;
+      font-weight: bold;
+      margin-top: 20px;
+      line-height: 1.5;
+    }
+
+    .notice {
+      padding: 12px;
+      background: #f1f4f8;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    iframe { display: none; }
+  </style>
+</head>
+
+<body>
+
+<div class="panel">
+
+  <h2>Attendance Registration</h2>
+
+  <p class="notice">
+    Your location will be checked once when you submit
+    attendance. It will not be continuously tracked.
+  </p>
+
+  <input
+    id="studentId"
+    type="text"
+    placeholder="University Student ID"
+    autocomplete="off"
+  >
+
+  <input
+    id="studentName"
+    type="text"
+    placeholder="Full Name"
+    autocomplete="name"
+  >
+
+  <button id="submitButton" onclick="submitForm()">
+    Verify Location & Submit
+  </button>
+
+  <div id="message"></div>
+
+</div>
+
+<script>
+
+  // IMPORTANT: Replace with your deployed Apps Script /exec URL.
+  const API_URL = "PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE";
+
+  const SESSION_TOKEN =
+    new URLSearchParams(window.location.search).get("token") || "";
+
+  const button = document.getElementById("submitButton");
+  const message = document.getElementById("message");
+
+  function showMessage(text, success = false) {
+    message.textContent = text;
+    message.style.color = success ? "green" : "red";
+  }
+
+  function uuid() {
+    if (crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+
+    return Array.from(bytes)
+      .map(x => x.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  function getDeviceToken() {
+    const key = "attendance_v3_device_token";
+
+    let token = localStorage.getItem(key);
+
+    if (!token) {
+      token = uuid();
+      localStorage.setItem(key, token);
+    }
+
+    return token;
+  }
+
+  function sendForm(payload, receipt) {
+    const iframe = document.createElement("iframe");
+
+    iframe.name = "attendanceFrame_" + receipt;
+    document.body.appendChild(iframe);
+
+    const form = document.createElement("form");
+
+    form.method = "POST";
+    form.action = API_URL;
+    form.target = iframe.name;
+    form.enctype = "application/x-www-form-urlencoded";
+    form.style.display = "none";
+
+    Object.entries({
+      ...payload,
+      receipt: receipt
+    }).forEach(([key, value]) => {
+      const input = document.createElement("input");
+
+      input.type = "hidden";
+      input.name = key;
+      input.value = String(value);
+
+      form.appendChild(input);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
+  let pollingAttempts = 0;
+
+  function checkReceipt(receipt) {
+    pollingAttempts++;
+
+    if (pollingAttempts > 25) {
+      showMessage(
+        "The server response timed out. Check with the attendance administrator."
+      );
+
+      button.disabled = false;
+      button.textContent = "Try Again";
+      return;
+    }
+
+    window.handleAttendanceReceipt = function(result) {
+
+      if (result.pending) {
+        setTimeout(
+          () => checkReceipt(receipt),
+          1000
+        );
+
+        return;
+      }
+
+      if (result.success) {
+        showMessage(result.message, true);
+        button.textContent = "Submitted";
+        button.disabled = true;
+      } else {
+        showMessage(result.message);
+
+        button.disabled = false;
+        button.textContent = "Try Again";
+      }
+    };
+
+    const script = document.createElement("script");
+
+    script.src =
+      API_URL +
+      "?action=receipt" +
+      "&id=" + encodeURIComponent(receipt) +
+      "&callback=handleAttendanceReceipt" +
+      "&t=" + Date.now();
+
+    script.onerror = function() {
+      setTimeout(() => checkReceipt(receipt), 1500);
+    };
+
+    document.body.appendChild(script);
+  }
+
+  function submitForm() {
+
+    const studentId =
+      document.getElementById("studentId").value.trim();
+
+    const studentName =
+      document.getElementById("studentName").value.trim();
+
+    if (!SESSION_TOKEN) {
+      showMessage("Invalid QR code.");
+      return;
+    }
+
+    if (!studentId || !studentName) {
+      showMessage("Complete both fields.");
+      return;
+    }
+
+    if (
+      API_URL.includes("PASTE_YOUR") ||
+      !API_URL.startsWith("https://")
+    ) {
+      showMessage("Attendance system is not configured.");
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      showMessage("Your browser does not support GPS.");
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = "Requesting location...";
+
+    navigator.geolocation.getCurrentPosition(
+
+      function(position) {
+
+        const payload = {
+          token: SESSION_TOKEN,
+          studentId: studentId,
+          studentName: studentName,
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          deviceToken: getDeviceToken()
+        };
+
+        const receipt = uuid();
+
+        pollingAttempts = 0;
+
+        button.textContent = "Submitting...";
+
+        sendForm(payload, receipt);
+
+        setTimeout(
+          () => checkReceipt(receipt),
+          1000
+        );
+      },
+
+      function(error) {
+
+        let errorMessage;
+
+        if (error.code === 1) {
+          errorMessage =
+            "Location permission was denied. Allow location access in Safari settings.";
+        } else if (error.code === 2) {
+          errorMessage =
+            "Your location could not be determined.";
+        } else if (error.code === 3) {
+          errorMessage =
+            "Location request timed out. Please retry.";
+        } else {
+          errorMessage = "Location verification failed.";
+        }
+
+        showMessage(errorMessage);
+
+        button.disabled = false;
+        button.textContent = "Try Again";
+      },
+
+      {
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0
+      }
+    );
+  }
+
+</script>
+
+</body>
+</html>
